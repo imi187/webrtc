@@ -1,0 +1,149 @@
+package main
+
+import (
+	"encoding/json"
+	"sync"
+
+	"log"
+	"net/http"
+
+	"github.com/rs/cors"
+
+	"github.com/pion/webrtc/v3"
+)
+
+var (
+	peerConnection *webrtc.PeerConnection
+	mu             sync.Mutex
+)
+
+// HTTP handler voor het ontvangen van SDP en het versturen van SDP antwoorden
+func offerHandler(w http.ResponseWriter, r *http.Request) {
+
+	// Ontvang SDP Offer van client
+	var offer webrtc.SessionDescription
+	if err := json.NewDecoder(r.Body).Decode(&offer); err != nil {
+		log.Printf("error decoding sdp: %s\n", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Maak een nieuwe WebRTC peer connection configuratie
+	config := webrtc.Configuration{
+		ICEServers: []webrtc.ICEServer{}, // Geen STUN/TURN servers
+	}
+
+	// Maak een nieuwe peer connection
+	peerConnection, err := webrtc.NewPeerConnection(config)
+	if err != nil {
+		log.Printf("error creating peer connection: %s\n", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Voeg een data channel toe
+	dataChannel, err := peerConnection.CreateDataChannel("data", nil)
+	if err != nil {
+		log.Printf("error creating data channel: %s\n", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Zet een handler voor wanneer het data channel open gaat
+	dataChannel.OnOpen(func() {
+		log.Println("Data channel geopend")
+		dataChannel.SendText("Hallo van de server!")
+	})
+
+	// Zet een handler voor wanneer berichten binnenkomen
+	dataChannel.OnMessage(func(msg webrtc.DataChannelMessage) {
+		log.Printf("Ontvangen bericht: %s\n", string(msg.Data))
+	})
+
+	// Zet SDP offer en maak SDP answer
+	if err = peerConnection.SetRemoteDescription(offer); err != nil {
+		log.Printf("error setting remote description: %s\n", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	answer, err := peerConnection.CreateAnswer(nil)
+	if err != nil {
+		log.Printf("error creating answer: %s\n", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Zet local SDP op de peer connection
+	if err = peerConnection.SetLocalDescription(answer); err != nil {
+		log.Printf("error setting local description: %s\n", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Verstuur de SDP answer terug naar de client
+	response := map[string]string{
+		"type": answer.Type.String(),
+		"sdp":  answer.SDP,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Printf("error encoding response: %s\n", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func iceCandidateHandler(w http.ResponseWriter, r *http.Request) {
+	var candidate struct {
+		Candidate     string `json:"candidate"`
+		SdpMid        string `json:"sdpMid"`
+		SdpMLineIndex int    `json:"sdpMLineIndex"`
+	}
+
+	if r.Method == http.MethodPost {
+		// Verwerk inkomende ICE candidates
+		if err := json.NewDecoder(r.Body).Decode(&candidate); err != nil {
+			log.Printf("error decoding ICE candidate: %s\n", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		if peerConnection != nil {
+			err := peerConnection.AddICECandidate(webrtc.ICECandidateInit{
+				Candidate: candidate.Candidate,
+			})
+			if err != nil {
+				log.Printf("error adding ICE candidate: %s\n", err)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+
+	} else if r.Method == http.MethodGet {
+		// Simuleer het versturen van een JSON-antwoord met een voorbeeld ICE candidate
+		// In een echte toepassing moet je de ICE candidates beheren en ophalen uit een opslag
+		response := map[string]interface{}{
+			"candidate":     "candidate:...",
+			"sdpMid":        "video",
+			"sdpMLineIndex": 0,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			log.Printf("error encoding response: %s\n", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+}
+
+func main() {
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/offer", offerHandler)
+	mux.HandleFunc("/ice-candidate", iceCandidateHandler)
+	handler := cors.Default().Handler(mux)
+	log.Println("Starting server on :8080")
+	log.Fatal(http.ListenAndServe(":8080", handler))
+}
