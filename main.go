@@ -2,29 +2,52 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 
+	"github.com/joho/godotenv"
 	"github.com/pion/webrtc/v3"
 	"github.com/rs/cors"
 )
 
 var (
 	peerConnection *webrtc.PeerConnection
-	dataChannels   []*webrtc.DataChannel
+	dataChannels   map[string]*webrtc.DataChannel
 	mu             sync.Mutex
 	coordinates    = [2]int{0, 0}
 )
 
 func main() {
-
+	dataChannels = make(map[string]*webrtc.DataChannel)
 	mux := http.NewServeMux()
+	mux.HandleFunc("/", handleFrontend)
 	mux.HandleFunc("/offer", handleOffer)
 	mux.HandleFunc("/ice", handleICE)
 	handler := cors.Default().Handler(mux)
 	log.Println("Starting server on :3001")
 	log.Fatal(http.ListenAndServe(":3001", handler))
+}
+
+func handleFrontend(w http.ResponseWriter, r *http.Request) {
+	err := godotenv.Load(".env")
+	if err != nil {
+		log.Fatal(err)
+	}
+	host := os.Getenv("HOST")
+	fmt.Println("Reading file")
+	fileName := "index.html"
+	stringBytes, err := os.ReadFile(fileName)
+	if err != nil {
+		panic(err)
+	}
+	htmlString := string(stringBytes[:])
+	htmlString = strings.Replace(htmlString, "{host}", host, 2)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write([]byte(htmlString))
 }
 
 func handleOffer(w http.ResponseWriter, r *http.Request) {
@@ -53,7 +76,7 @@ func handleOffer(w http.ResponseWriter, r *http.Request) {
 	config := webrtc.Configuration{
 		ICEServers: []webrtc.ICEServer{
 			{
-				URLs: []string{"stun:stun.l.google.com:19302"},
+				URLs: []string{"stun:stun.l.google.com:5349"},
 			},
 		},
 	}
@@ -66,6 +89,20 @@ func handleOffer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	peerConnection.OnDataChannel(func(d *webrtc.DataChannel) {
+
+		addressStr := fmt.Sprintf("%p", d.ID())
+
+		peerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
+			log.Printf("ICE Connection State has changed: %s\n", connectionState.String())
+			if connectionState == webrtc.ICEConnectionStateDisconnected {
+				// Verwerking van het sluiten
+				mu.Lock()
+				delete(dataChannels, addressStr)
+				mu.Unlock()
+				fmt.Println("Channel deleted")
+			}
+		})
+
 		log.Printf("Data channel '%s' received\n", d.Label())
 
 		d.OnOpen(func() {
@@ -73,12 +110,15 @@ func handleOffer(w http.ResponseWriter, r *http.Request) {
 		})
 
 		d.OnClose(func() {
-			deleteCandidateFromMemory(d)
 
+			mu.Lock()
+			delete(dataChannels, addressStr)
+			mu.Unlock()
+			fmt.Println("Channel deleted")
 		})
 
 		mu.Lock()
-		dataChannels = append(dataChannels, d)
+		dataChannels[addressStr] = d
 		mu.Unlock()
 
 		d.OnMessage(func(msg webrtc.DataChannelMessage) {
@@ -155,24 +195,14 @@ func handleICE(w http.ResponseWriter, r *http.Request) {
 func broadcastMessage() {
 	//mu.Lock()
 	//defer mu.Unlock()
-
+	i := 0
 	for _, channel := range dataChannels {
 		coorJson, _ := json.Marshal(coordinates)
-
+		log.Printf("ID-NUMBER: %d", i)
 		if err := channel.SendText(string(coorJson)); err != nil {
 			log.Printf("Failed to send message on data channel '%s': %s", channel.Label(), err)
 		}
-	}
-}
-
-func deleteCandidateFromMemory(d *webrtc.DataChannel) {
-	for index, channel := range dataChannels {
-		if channel.ID() == d.ID() {
-			mu.Lock()
-			dataChannels = append(dataChannels[:index], dataChannels[index+1:]...)
-			mu.Unlock()
-			log.Printf("Candidate %d deleted", d.ID())
-		}
+		i++
 	}
 }
 

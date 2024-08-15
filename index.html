@@ -1,0 +1,112 @@
+<html>
+    <script>
+        let dataChannel, box;
+        async function startConnection(name) {
+
+            window.addEventListener('beforeunload', function (e) {
+                // Hier kun je eventueel een signaal sturen naar de server
+                if (peerConnection) {
+                    peerConnection.close();
+                }
+            });
+        
+            let peerConnection = new RTCPeerConnection({
+                iceServers: [
+                    { 
+                        urls: 'stun:stun.l.google.com:5349',
+                    },
+                    {
+                        urls: 'turn:turn.anyfirewall.com:443?transport=tcp', // TURN-server
+                        username: 'webrtc',               // Gebruikersnaam voor TURN-server
+                        credential: 'webrtc'            // Wachtwoord voor TURN-server
+                    }]
+            });
+
+            dataChannel = peerConnection.createDataChannel(name);
+
+            dataChannel.onopen = () => {
+                console.log('Data channel is open');
+            };
+
+            dataChannel.onmessage = event => {
+                
+                //box = !box && document.getElementById("box");
+
+                if(!box) {
+                    box = document.getElementById("box");
+                }
+                let coordinates = JSON.parse(event.data);
+                console.log(coordinates)    
+                box.style.left = coordinates[0] - 25;
+                box.style.top = coordinates[1] - 25;
+            };
+            
+
+            peerConnection.onicecandidate = event => {
+                if (event.candidate) {
+                    fetch('{host}/ice', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            candidate: event.candidate.candidate,
+                            sdpMid: event.candidate.sdpMid,
+                            sdpMLineIndex: event.candidate.sdpMLineIndex
+                        })
+                    });
+                }
+            };
+
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+            const offerResponse = await fetch('{host}/offer', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    type: 'offer',
+                    sdp: offer.sdp,
+                    name: name
+                })
+            });
+
+            const answer = await offerResponse.json();
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+        
+        }
+
+        startConnection("data");
+        document.onmousemove = handleMouseMove
+
+        function handleMouseMove(event) {
+        if(dataChannel) {
+            dataChannel.send(JSON.stringify([event.clientX, event.clientY]));
+        }
+    }
+
+    </script>
+
+    <style>
+        .box {
+            background-color: black;
+            display: block;
+            width: 50px;
+            height: 50px;
+            position: fixed;
+            top: 0;
+            left: 0;
+            -webkit-border-radius: 99px;
+            -moz-border-radius: 99px;
+            border-radius: 99px;
+        }
+        .no-cursor {
+            cursor: none;
+        }
+    </style>
+
+    <body class="no-cursor">
+        <div id="box" class="box"></div>
+    </body>
+</html>
