@@ -1,112 +1,153 @@
 <html>
-    <script>
-        let dataChannel, box;
-        async function startConnection(name) {
+  <script>
+    let peerConnection, dataChannel, box, dots = {};
 
-            window.addEventListener('beforeunload', function (e) {
-                // Hier kun je eventueel een signaal sturen naar de server
-                if (peerConnection) {
-                    peerConnection.close();
-                }
-            });
-        
-            let peerConnection = new RTCPeerConnection({
-                iceServers: [
-                    { 
-                        urls: 'stun:stun.l.google.com:5349',
-                    },
-                    {
-                        urls: 'turn:turn.anyfirewall.com:443?transport=tcp', // TURN-server
-                        username: 'webrtc',               // Gebruikersnaam voor TURN-server
-                        credential: 'webrtc'            // Wachtwoord voor TURN-server
-                    }]
-            });
+    window.addEventListener("beforeunload", function (e) {
+      if (peerConnection) {
+        peerConnection.close();
+      }
+    });
 
-            dataChannel = peerConnection.createDataChannel(name);
+    ws = new WebSocket("{ws}");
+    iceCandidates = [];
 
-            dataChannel.onopen = () => {
-                console.log('Data channel is open');
-            };
+    ws.onopen = function (e) {
+      startConnection("data", ws);
+    };
 
-            dataChannel.onmessage = event => {
-                
-                //box = !box && document.getElementById("box");
+    ws.onmessage = function (e) {
+      let json = JSON.parse(e.data);
+      iceCandidates.push(json);
+      console.log("Incomming candidate");
+    };
 
-                if(!box) {
-                    box = document.getElementById("box");
-                }
-                let coordinates = JSON.parse(event.data);
-                console.log(coordinates)    
-                box.style.left = coordinates[0] - 25;
-                box.style.top = coordinates[1] - 25;
-            };
-            
+    async function startConnection(name, websocket) {
+    let peerConnection = new RTCPeerConnection({
+            iceServers: [
+        {
+            "urls": "stun:global.stun.twilio.com:3478"
+        },
+        {
+            "username": "dc2d2894d5a9023620c467b0e71cfa6a35457e6679785ed6ae9856fe5bdfa269",
+            "credential": "tE2DajzSJwnsSbc123",
+            "urls": "turn:global.turn.twilio.com:3478?transport=udp"
+        },
+        {
+            "username": "dc2d2894d5a9023620c467b0e71cfa6a35457e6679785ed6ae9856fe5bdfa269",
+            "credential": "tE2DajzSJwnsSbc123",
+            "urls": "turn:global.turn.twilio.com:3478?transport=tcp"
+        },
+        {
+            "username": "dc2d2894d5a9023620c467b0e71cfa6a35457e6679785ed6ae9856fe5bdfa269",
+            "credential": "tE2DajzSJwnsSbc123",
+            "urls": "turn:global.turn.twilio.com:443?transport=tcp"
+        }   
+    ]});
 
-            peerConnection.onicecandidate = event => {
-                if (event.candidate) {
-                    fetch('{host}/ice', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({
-                            candidate: event.candidate.candidate,
-                            sdpMid: event.candidate.sdpMid,
-                            sdpMLineIndex: event.candidate.sdpMLineIndex
-                        })
-                    });
-                }
-            };
+      peerConnection.ondatachannel = function (ev) {
+        console.log("peerConnection.ondatachannel event fired.");
+        ev.channel.onmessage = function (event) {
+          let multiCoordinates = JSON.parse(event.data);
+          for (const [key, value] of Object.entries(multiCoordinates)) {
+            if(!dots[key]){
+              dots[key] = document.createElement('div');
+              dots[key].className = 'dot';
 
-            const offer = await peerConnection.createOffer();
-            await peerConnection.setLocalDescription(offer);
-            const offerResponse = await fetch('{host}/offer', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    type: 'offer',
-                    sdp: offer.sdp,
-                    name: name
-                })
-            });
+              document.getElementsByTagName('body')[0].appendChild(dots[key]);
+            }
 
-            const answer = await offerResponse.json();
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
-        
-        }
 
-        startConnection("data");
-        document.onmousemove = handleMouseMove
+            dots[key].style.transform =`translate(${value[0]-30 }px, ${value[1] - 130}px)`;
+            /*dots[key].style.left = value[0] - 25;
+            dots[key].style.top = value[1] - 25;*/
 
-        function handleMouseMove(event) {
-        if(dataChannel) {
-            dataChannel.send(JSON.stringify([event.clientX, event.clientY]));
-        }
+          }
+        };
+
+        dataChannel = ev.channel;
+      };
+
+      const offerResponse = await fetch("{host}/offer", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ channelId: name }),
+      });
+
+      const offer = await offerResponse.json();
+      await peerConnection.setRemoteDescription(
+        new RTCSessionDescription(offer),
+      );
+      const answer = await peerConnection.createAnswer();
+      await peerConnection.setLocalDescription(answer);
+
+      await fetch("{host}/answer", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(answer),
+      });
+
+      iceCandidates.forEach((candidate) => {
+          peerConnection.addIceCandidate(new RTCIceCandidate(candidate))
+          .catch((e) => {
+            console.error(e);
+          });
+
+          console.log("candidate added");
+      });
+
+      ws.close()
     }
 
-    </script>
+    document.addEventListener("mousemove", (event) => {
+        // Alleen noodzakelijke berekeningen hier
+        handleMouseMove(event);
+    });
 
-    <style>
-        .box {
-            background-color: black;
-            display: block;
-            width: 50px;
-            height: 50px;
-            position: fixed;
-            top: 0;
-            left: 0;
-            -webkit-border-radius: 99px;
-            -moz-border-radius: 99px;
-            border-radius: 99px;
-        }
-        .no-cursor {
-            cursor: none;
-        }
-    </style>
+    /*function handleMouseMove(event) {
+        requestAnimationFrame(() => {
+          if (dataChannel) {
+            dataChannel.send(JSON.stringify([event.clientX, event.clientY]));
+          }
+        });
+    }*/
 
-    <body class="no-cursor">
-        <div id="box" class="box"></div>
-    </body>
+    /*document.addEventListener("pointermove", (event) => {
+      console.log("Pointer moved to:", event.clientX, event.clientY);
+
+        dataChannel.send(JSON.stringify([ Math.floor(event.clientX), Math.floor(event.clientY)]));
+    });*/
+
+    function handleMouseMove(event) {
+      if (dataChannel) {
+        dataChannel.send(JSON.stringify([event.clientX, event.clientY]));
+      }
+    }
+  </script>
+
+  <style>
+    .dot {
+      background-color: black;
+      display: block;
+      width: 50px;
+      height: 50px;
+      /*position: fixed;*/
+      /*top: 40;
+      left: 40;*/
+      -webkit-border-radius: 99px;
+      -moz-border-radius: 99px;
+      border-radius: 99px;
+    }
+    .no-cursor {
+      /*cursor: none;*/
+    }
+  </style>
+
+  <body class="no-cursor">
+    
+  </body>
 </html>
+

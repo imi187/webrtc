@@ -20,7 +20,7 @@ var (
 	websocketConnection *websocket.Conn
 	dataChannels        map[string]*webrtc.DataChannel
 	mu                  sync.Mutex
-	multiCoordinates    = map[string][2]int{}
+	coordinates         = [2]int{0, 0}
 )
 
 var upgrader = websocket.Upgrader{
@@ -31,7 +31,6 @@ var upgrader = websocket.Upgrader{
 
 func main() {
 	dataChannels = make(map[string]*webrtc.DataChannel)
-	multiCoordinates = make(map[string][2]int)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handleFrontend)
 	mux.HandleFunc("/favicon.ico", handleFrontend1)
@@ -145,24 +144,12 @@ func handleOffer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	config := webrtc.Configuration{
+		//ICETransportPolicy: webrtc.ICETransportPolicyRelay,
 		ICEServers: []webrtc.ICEServer{
 			{
-				URLs: []string{"stun:global.stun.twilio.com:3478"},
-			},
-			{
-				Username:   "dc2d2894d5a9023620c467b0e71cfa6a35457e6679785ed6ae9856fe5bdfa269",
-				Credential: "tE2DajzSJwnsSbc123",
-				URLs:       []string{"turn:global.turn.twilio.com:3478?transport=udp"},
-			},
-			{
-				Username:   "dc2d2894d5a9023620c467b0e71cfa6a35457e6679785ed6ae9856fe5bdfa269",
-				Credential: "tE2DajzSJwnsSbc123",
-				URLs:       []string{"turn:global.turn.twilio.com:3478?transport=tcp"},
-			},
-			{
-				Username:   "dc2d2894d5a9023620c467b0e71cfa6a35457e6679785ed6ae9856fe5bdfa269",
-				Credential: "tE2DajzSJwnsSbc123",
-				URLs:       []string{"turn:global.turn.twilio.com:443?transport=tcp"},
+				URLs:       []string{"turn:turn.bistri.com:80"},
+				Username:   "homeo",
+				Credential: "homeo",
 			},
 		},
 	}
@@ -203,8 +190,6 @@ func handleOffer(w http.ResponseWriter, r *http.Request) {
 		addressStr := fmt.Sprintf("%p", dataChannel.ID())
 		fmt.Println(addressStr)
 		dataChannels[addressStr] = dataChannel
-		coordinates := [2]int{0, 0}
-		multiCoordinates[addressStr] = coordinates
 		fmt.Printf("On %s\n", "Open")
 	})
 
@@ -212,18 +197,15 @@ func handleOffer(w http.ResponseWriter, r *http.Request) {
 		addressStr := fmt.Sprintf("%p", dataChannel.ID())
 		fmt.Println(addressStr)
 		delete(dataChannels, addressStr)
-		delete(multiCoordinates, addressStr)
 		fmt.Println("Channel close")
 	})
 
 	dataChannel.OnMessage(func(msg webrtc.DataChannelMessage) {
-		addressStr := fmt.Sprintf("%p", dataChannel.ID())
-		//var direction = string(msg.Data)
+		var direction = string(msg.Data)
 		var arr []int
 		_ = json.Unmarshal(msg.Data, &arr)
-		coordinates := [2]int(arr)
-		multiCoordinates[addressStr] = coordinates
-		//log.Printf("Message received from data channel '%s': %s\n", dataChannel.Label(), direction)
+		coordinates = [2]int(arr)
+		log.Printf("Message received from data channel '%s': %s\n", dataChannel.Label(), direction)
 		broadcastMessage()
 	})
 
@@ -248,15 +230,10 @@ func handleOffer(w http.ResponseWriter, r *http.Request) {
 
 func broadcastMessage() {
 	i := 0
-	//coorJson, _ := json.Marshal(coordinates)
-
-	jsonData, _ := json.Marshal(multiCoordinates)
-
-	log.Println(string(jsonData))
-
+	coorJson, _ := json.Marshal(coordinates)
 	for _, channel := range dataChannels {
 		log.Printf("ID-NUMBER: %d", i)
-		if err := channel.SendText(string(jsonData)); err != nil {
+		if err := channel.SendText(string(coorJson)); err != nil {
 			log.Printf("Failed to send message on data channel '%s': %s", channel.Label(), err)
 		}
 		i++

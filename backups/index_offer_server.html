@@ -1,0 +1,116 @@
+<html>
+  <script>
+    let peerConnection, dataChannel, box;
+
+    window.addEventListener("beforeunload", function (e) {
+      if (peerConnection) {
+        peerConnection.close();
+      }
+    });
+
+    ws = new WebSocket("{ws}");
+    iceCandidates = [];
+
+    ws.onopen = function (e) {
+      startConnection("data", ws);
+    };
+
+    ws.onmessage = function (e) {
+      let json = JSON.parse(e.data);
+      iceCandidates.push(json);
+      console.log("Incomming candidate");
+    };
+
+    async function startConnection(name, websocket) {
+      peerConnection = new RTCPeerConnection({
+        iceServers: [
+          {
+            urls: "stun:stun.l.google.com:5349",
+          },
+          {
+            urls: "turn:turn.anyfirewall.com:443?transport=tcp",
+            username: "webrtc",
+            credential: "webrtc",
+          },
+        ],
+      });
+
+      peerConnection.ondatachannel = function (ev) {
+        console.log("peerConnection.ondatachannel event fired.");
+        ev.channel.onmessage = function (event) {
+          if (!box) {
+            box = document.getElementById("box");
+          }
+          let coordinates = JSON.parse(event.data);
+          box.style.left = coordinates[0] - 25;
+          box.style.top = coordinates[1] - 25;
+        };
+
+        dataChannel = ev.channel;
+      };
+
+      const offerResponse = await fetch("{host}/offer", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ channelId: name }),
+      });
+
+      const offer = await offerResponse.json();
+      await peerConnection.setRemoteDescription(
+        new RTCSessionDescription(offer),
+      );
+      const answer = await peerConnection.createAnswer();
+      await peerConnection.setLocalDescription(answer);
+
+      await fetch("{host}/answer", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(answer),
+      });
+
+      iceCandidates.forEach((candidate) => {
+          peerConnection.addIceCandidate(new RTCIceCandidate(candidate))
+          .catch((e) => {
+            console.error(e);
+          });
+
+          console.log("candidate added");
+      });
+    }
+
+    document.onmousemove = handleMouseMove;
+
+    function handleMouseMove(event) {
+      if (dataChannel) {
+        dataChannel.send(JSON.stringify([event.clientX, event.clientY]));
+      }
+    }
+  </script>
+
+  <style>
+    .box {
+      background-color: black;
+      display: block;
+      width: 50px;
+      height: 50px;
+      position: fixed;
+      top: 40;
+      left: 40;
+      -webkit-border-radius: 99px;
+      -moz-border-radius: 99px;
+      border-radius: 99px;
+    }
+    .no-cursor {
+      cursor: none;
+    }
+  </style>
+
+  <body class="no-cursor">
+    <div id="box" class="box"></div>
+  </body>
+</html>
+

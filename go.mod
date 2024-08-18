@@ -3,6 +3,7 @@ module github.com/imi187/webrtc
 go 1.22.6
 
 require (
+	github.com/gorilla/websocket v1.5.3
 	github.com/pion/webrtc/v3 v3.2.51
 	github.com/rs/cors v1.11.0
 )
