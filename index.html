@@ -1,6 +1,6 @@
 <html>
   <script>
-    let peerConnection, dataChannel, box, dots = {};
+    let peerConnection, dataChannel, box, dots = {}, iceCandidates = [];
 
     window.addEventListener("beforeunload", function (e) {
       if (peerConnection) {
@@ -8,18 +8,7 @@
       }
     });
 
-    ws = new WebSocket("{ws}");
-    iceCandidates = [];
-
-    ws.onopen = function (e) {
-      startConnection("data", ws);
-    };
-
-    ws.onmessage = function (e) {
-      let json = JSON.parse(e.data);
-      iceCandidates.push(json);
-      console.log("Incomming candidate");
-    };
+    
 
     async function startConnection(name, websocket) {
     let peerConnection = new RTCPeerConnection({
@@ -55,15 +44,10 @@
 
               document.getElementsByTagName('body')[0].appendChild(dots[key]);
             }
-
-
             dots[key].style.transform =`translate(${value[0]-30 }px, ${value[1] - 130}px)`;
-            /*dots[key].style.left = value[0] - 25;
-            dots[key].style.top = value[1] - 25;*/
 
           }
         };
-
         dataChannel = ev.channel;
       };
 
@@ -87,7 +71,10 @@
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(answer),
+        body: JSON.stringify({
+          channelId: name,
+          answer: answer
+        }),
       });
 
       iceCandidates.forEach((candidate) => {
@@ -103,28 +90,29 @@
     }
 
     document.addEventListener("mousemove", (event) => {
-        // Alleen noodzakelijke berekeningen hier
         handleMouseMove(event);
     });
-
-    /*function handleMouseMove(event) {
-        requestAnimationFrame(() => {
-          if (dataChannel) {
-            dataChannel.send(JSON.stringify([event.clientX, event.clientY]));
-          }
-        });
-    }*/
-
-    /*document.addEventListener("pointermove", (event) => {
-      console.log("Pointer moved to:", event.clientX, event.clientY);
-
-        dataChannel.send(JSON.stringify([ Math.floor(event.clientX), Math.floor(event.clientY)]));
-    });*/
 
     function handleMouseMove(event) {
       if (dataChannel) {
         dataChannel.send(JSON.stringify([event.clientX, event.clientY]));
       }
+    }
+
+    function start() {
+
+      const input = document.getElementById("name");
+      ws = new WebSocket("{ws}");
+      ws.onopen = function (e) {
+        startConnection(input.value, ws);
+      };
+
+      ws.onmessage = function (e) {
+        let json = JSON.parse(e.data);
+        iceCandidates.push(json);
+        console.log("Incomming candidate");
+      };
+
     }
   </script>
 
@@ -134,20 +122,20 @@
       display: block;
       width: 50px;
       height: 50px;
-      /*position: fixed;*/
-      /*top: 40;
-      left: 40;*/
       -webkit-border-radius: 99px;
       -moz-border-radius: 99px;
       border-radius: 99px;
     }
     .no-cursor {
-      /*cursor: none;*/
+      cursor: none;
     }
   </style>
 
   <body class="no-cursor">
-    
+    <div>
+      <input id="name" />
+      <button onclick="start()">Start connection</button>
+    </div>
   </body>
 </html>
 

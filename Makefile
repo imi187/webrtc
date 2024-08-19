@@ -5,4 +5,4 @@ run: build
 	@./bin/webrtc
 
 test:
-	@go test ./... -v	
+	@go test ./... -v

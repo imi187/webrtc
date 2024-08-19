@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -16,7 +15,7 @@ import (
 )
 
 var (
-	peerConnection      *webrtc.PeerConnection
+	peerConnection      map[string]*webrtc.PeerConnection
 	websocketConnection *websocket.Conn
 	dataChannels        map[string]*webrtc.DataChannel
 	mu                  sync.Mutex
@@ -31,6 +30,7 @@ var upgrader = websocket.Upgrader{
 
 func main() {
 	dataChannels = make(map[string]*webrtc.DataChannel)
+	peerConnection = make(map[string]*webrtc.PeerConnection)
 	multiCoordinates = make(map[string][2]int)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handleFrontend)
@@ -46,24 +46,24 @@ func main() {
 func handleConnection(w http.ResponseWriter, r *http.Request) {
 	websocketConnection, _ = upgrader.Upgrade(w, r, nil)
 	defer func() {
-		fmt.Println("Closing connection")
+		log.Println("Closing connection")
 		err := websocketConnection.Close()
 		if err != nil {
-			fmt.Println("Error while closing connection:", err)
+			log.Println("Error while closing connection:", err)
 		}
 	}()
-	fmt.Println("Client connected")
+	log.Println("Client connected")
 	for {
 		messageType, msg, err := websocketConnection.ReadMessage()
 		if err != nil {
-			fmt.Println("Error while reading message:", err)
+			log.Println("Error while reading message:", err)
 			break
 		}
-		fmt.Printf("Received message: %s\n", msg)
+		log.Printf("Received message: %s\n", msg)
 
 		err = websocketConnection.WriteMessage(messageType, msg)
 		if err != nil {
-			fmt.Println("Error while writing message:", err)
+			log.Println("Error while writing message:", err)
 			break
 		}
 	}
@@ -80,7 +80,7 @@ func handleFrontend(w http.ResponseWriter, r *http.Request) {
 	}
 	host := os.Getenv("HOST")
 	ws := os.Getenv("WS")
-	fmt.Println("Reading file")
+	log.Println("Reading file")
 	fileName := "index.html"
 	stringBytes, err := os.ReadFile(fileName)
 	if err != nil {
@@ -100,21 +100,24 @@ func handleAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var answer struct {
-		Type string `json:"type"`
-		SDP  string `json:"sdp"`
+		ChannelId string `json:"channelId"`
+		Answer    struct {
+			Type string `json:"type"`
+			SDP  string `json:"sdp"`
+		}
 	}
 	if err := json.NewDecoder(r.Body).Decode(&answer); err != nil {
 		http.Error(w, "Failed to decode offer", http.StatusBadRequest)
 		return
 	}
 
-	if answer.Type != "answer" || answer.SDP == "" {
+	if answer.Answer.Type != "answer" || answer.Answer.SDP == "" {
 		http.Error(w, "Invalid offer", http.StatusBadRequest)
 		return
 	}
 
-	sdp := webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: answer.SDP}
-	if err := peerConnection.SetRemoteDescription(sdp); err != nil {
+	sdp := webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: answer.Answer.SDP}
+	if err := peerConnection[answer.ChannelId].SetRemoteDescription(sdp); err != nil {
 		log.Printf("error setting remote description: %s\n", err)
 		http.Error(w, "Failed to set remote description", http.StatusInternalServerError)
 		return
@@ -132,12 +135,11 @@ func handleOffer(w http.ResponseWriter, r *http.Request) {
 	var postBody struct {
 		ChannelId string `json:"channelId"`
 	}
+
 	if err := json.NewDecoder(r.Body).Decode(&postBody); err != nil {
 		http.Error(w, "Failed to decode postBody", http.StatusBadRequest)
 		return
 	}
-
-	fmt.Print(postBody.ChannelId)
 
 	if postBody.ChannelId == "" {
 		http.Error(w, "Invalid ChannelId", http.StatusBadRequest)
@@ -169,19 +171,31 @@ func handleOffer(w http.ResponseWriter, r *http.Request) {
 
 	mu.Lock()
 	var err error
-	peerConnection, err = webrtc.NewPeerConnection(config)
+	peerConnection[postBody.ChannelId], err = webrtc.NewPeerConnection(config)
 	if err != nil {
 		return
 	}
 	mu.Unlock()
 
-	dataChannel, err := peerConnection.CreateDataChannel("test", nil)
+	peerConnection[postBody.ChannelId].OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
+		log.Printf("ICE Connection State has changed: %s\n", connectionState.String())
+		if connectionState == webrtc.ICEConnectionStateDisconnected {
+			mu.Lock()
+			delete(dataChannels, postBody.ChannelId)
+			delete(multiCoordinates, postBody.ChannelId)
+			delete(peerConnection, postBody.ChannelId)
+			mu.Unlock()
+			log.Println("Channel deleted")
+		}
+	})
+
+	dataChannel, err := peerConnection[postBody.ChannelId].CreateDataChannel("test", nil)
 
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	peerConnection.OnICECandidate(func(c *webrtc.ICECandidate) {
+	peerConnection[postBody.ChannelId].OnICECandidate(func(c *webrtc.ICECandidate) {
 		if c != nil {
 			candidateJSON := c.ToJSON()
 			candidate := struct {
@@ -194,45 +208,40 @@ func handleOffer(w http.ResponseWriter, r *http.Request) {
 				SDPMLineIndex: derefUint16(candidateJSON.SDPMLineIndex),
 			}
 			json, _ := json.Marshal(candidate)
-			fmt.Printf("%s", json)
+			log.Printf("%s", json)
 			_ = websocketConnection.WriteMessage(1, json)
 		}
 	})
 
+	dataChannels[postBody.ChannelId] = dataChannel
+	coordinates := [2]int{0, 0}
+	multiCoordinates[postBody.ChannelId] = coordinates
+
 	dataChannel.OnOpen(func() {
-		addressStr := fmt.Sprintf("%p", dataChannel.ID())
-		fmt.Println(addressStr)
-		dataChannels[addressStr] = dataChannel
-		coordinates := [2]int{0, 0}
-		multiCoordinates[addressStr] = coordinates
-		fmt.Printf("On %s\n", "Open")
+		log.Printf("On %s\n", "Open")
 	})
 
 	dataChannel.OnClose(func() {
-		addressStr := fmt.Sprintf("%p", dataChannel.ID())
-		fmt.Println(addressStr)
-		delete(dataChannels, addressStr)
-		delete(multiCoordinates, addressStr)
-		fmt.Println("Channel close")
+		delete(dataChannels, postBody.ChannelId)
+		delete(multiCoordinates, postBody.ChannelId)
+		delete(peerConnection, postBody.ChannelId)
+		log.Println("Channel close")
 	})
 
 	dataChannel.OnMessage(func(msg webrtc.DataChannelMessage) {
-		addressStr := fmt.Sprintf("%p", dataChannel.ID())
-		//var direction = string(msg.Data)
 		var arr []int
 		_ = json.Unmarshal(msg.Data, &arr)
 		coordinates := [2]int(arr)
-		multiCoordinates[addressStr] = coordinates
-		//log.Printf("Message received from data channel '%s': %s\n", dataChannel.Label(), direction)
+		multiCoordinates[postBody.ChannelId] = coordinates
 		broadcastMessage()
 	})
 
-	offer, err := peerConnection.CreateOffer(nil)
+	offer, err := peerConnection[postBody.ChannelId].CreateOffer(nil)
 	if err != nil {
 		panic(err)
 	}
 
-	err = peerConnection.SetLocalDescription(offer)
+	err = peerConnection[postBody.ChannelId].SetLocalDescription(offer)
 	if err != nil {
 		panic(err)
 	}
@@ -248,12 +257,8 @@ func handleOffer(w http.ResponseWriter, r *http.Request) {
 
 func broadcastMessage() {
 	i := 0
-	//coorJson, _ := json.Marshal(coordinates)
-
 	jsonData, _ := json.Marshal(multiCoordinates)
-
 	log.Println(string(jsonData))
-
 	for _, channel := range dataChannels {
 		log.Printf("ID-NUMBER: %d", i)
 		if err := channel.SendText(string(jsonData)); err != nil {
