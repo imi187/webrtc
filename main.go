@@ -14,12 +14,25 @@ import (
 	"github.com/rs/cors"
 )
 
+type player struct {
+	position  [2]int
+	theta     int
+	animation int
+}
+
+type playerJson struct {
+	Position  [2]int `json:"position"`
+	Theta     int    `json:"theta"`
+	Animation int    `json:"animation"`
+}
+
 var (
 	peerConnection      map[string]*webrtc.PeerConnection
 	websocketConnection *websocket.Conn
 	dataChannels        map[string]*webrtc.DataChannel
 	mu                  sync.Mutex
-	multiCoordinates    = map[string][2]int{}
+	multiCoordinates    = map[string][3]int{}
+	players             = map[string]playerJson{}
 )
 
 var upgrader = websocket.Upgrader{
@@ -31,7 +44,8 @@ var upgrader = websocket.Upgrader{
 func main() {
 	dataChannels = make(map[string]*webrtc.DataChannel)
 	peerConnection = make(map[string]*webrtc.PeerConnection)
-	multiCoordinates = make(map[string][2]int)
+	multiCoordinates = make(map[string][3]int)
+	players = make(map[string]playerJson)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handleFrontend)
 	mux.HandleFunc("/favicon.ico", handleFrontend1)
@@ -183,6 +197,7 @@ func handleOffer(w http.ResponseWriter, r *http.Request) {
 			mu.Lock()
 			delete(dataChannels, postBody.ChannelId)
 			delete(multiCoordinates, postBody.ChannelId)
+			delete(players, postBody.ChannelId)
 			delete(peerConnection, postBody.ChannelId)
 			mu.Unlock()
 			log.Println("Channel deleted")
@@ -215,7 +230,14 @@ func handleOffer(w http.ResponseWriter, r *http.Request) {
 
 	dataChannels[postBody.ChannelId] = dataChannel
 	coordinates := [2]int{0, 0}
-	multiCoordinates[postBody.ChannelId] = coordinates
+	//multiCoordinates[postBody.ChannelId] = coordinates
+
+	var playerVar playerJson
+	playerVar.Position = coordinates
+	playerVar.Theta = 0
+	playerVar.Animation = 2
+
+	players[postBody.ChannelId] = playerVar
 
 	dataChannel.OnOpen(func() {
 		log.Printf("On %s\n", "Open")
@@ -229,10 +251,9 @@ func handleOffer(w http.ResponseWriter, r *http.Request) {
 	})
 
 	dataChannel.OnMessage(func(msg webrtc.DataChannelMessage) {
-		var arr []int
-		_ = json.Unmarshal(msg.Data, &arr)
-		coordinates := [2]int(arr)
-		multiCoordinates[postBody.ChannelId] = coordinates
+		var playerJson playerJson
+		_ = json.Unmarshal(msg.Data, &playerJson)
+		players[postBody.ChannelId] = playerJson
 		broadcastMessage()
 	})
 
@@ -257,7 +278,7 @@ func handleOffer(w http.ResponseWriter, r *http.Request) {
 
 func broadcastMessage() {
 	i := 0
-	jsonData, _ := json.Marshal(multiCoordinates)
+	jsonData, _ := json.Marshal(players)
 	log.Println(string(jsonData))
 	for _, channel := range dataChannels {
 		log.Printf("ID-NUMBER: %d", i)
